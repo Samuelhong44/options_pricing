@@ -1,0 +1,54 @@
+---
+title: "mlp2_checkpoint_in_r"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Replicating Code
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+library(caret)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+n_units <- 400
+layers <- 4
+n_batch <- 1024
+n_epochs <- 200
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(42) # equivalent to python's random_state parameter
+train_index <- createDataPartition(y=undef, p = 0.99, list = FALSE)
+train_index2 <- createDataPartition(y=undef2, p = 0.99, list = FALSE)
+
+call_x_train <- undef[train_index, ]
+call_x_test <- undef[-train_index, ]
+
+call_y_train <- undef2[train_index2, ]
+call_y_test <- undef2[-train_index2, ]
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+model2 <- keras_model_sequential()
+model2 %>% layer_dense(units = n_units, input_shape = c(7)) %>% layer_activation_leaky_relu()
+
+for (i in 1:(layers-1)){
+  model2 <- model2 %>% layer_dense(units = n_units)
+  model2 <- model2 %>% layer_activation_leaky_relu()
+}
+
+model2 %>% layer_dense(units = 2, activation = 'relu')
+
+compile(object = model2, optimizer = optimizer_adam(lr = 0.0001), loss = 'mse')
+
+summary(model2)
+```
+

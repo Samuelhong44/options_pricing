@@ -1,0 +1,103 @@
+---
+title: "black_scholes_final"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Black Scholes
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(PerformanceAnalytics)
+library(dplyr)
+library(tidyverse)
+```
+
+# Separating Call Options and Put Options
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+options_bs <- read.csv("msft_final_df.csv")
+head(options_bs)
+options_both <- options_bs[, c("date", "exdate", "cp_flag", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "impl_volatility", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+
+options_both[, 9] <- NULL
+options_both[, 2] <- NULL
+
+nrow(options_both)
+
+options_put <- options_both %>% filter(cp_flag == "P")
+nrow(options_put)
+which(is.na(options_put))
+options_put <- na.omit(options_put)
+nrow(options_put)
+
+options_call <- options_both %>% filter(cp_flag == "C")
+nrow(options_call)
+which(is.na(options_call))
+options_call <- na.omit(options_call)
+nrow(options_call)
+options_call$treasury_rate <- ifelse(options_call$treasury_rate == "N/A", NA, options_call$treasury_rate)
+options_call <- na.omit(options_call)
+```
+
+# Black Scholes Model
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+black_scholes_put <- function(row){
+  S <- as.numeric(row["closing_price"])
+  X <- as.numeric(row["strike_price"]) / 1000
+  T_ <- as.numeric(row["date_ndiff"]) / 365
+  r <- as.numeric(row["treasury_rate"]) / 100
+  sigma <- as.numeric(row["sigma_20"])
+  d1 <- (log(S / X) + (r  + (sigma ** 2) / 2) * T_) / (sigma * (T_ ** 0.5))
+  d2 <- d1 - sigma * (T_ ** 0.5)
+  P <- pnorm(-d2) * X * exp(-r * T_) - S * pnorm(-d1)
+  P
+}
+
+black_scholes <- function(row){
+  S <- as.numeric(row["closing_price"])
+  X <- as.numeric(row["strike_price"]) / 1000
+  T_ <- as.numeric(row["date_ndiff"]) / 365
+  r <- as.numeric(row["treasury_rate"]) / 100
+  sigma <- as.numeric(row["sigma_20"])
+  d1 <- (log(S / X) + (r + (sigma ** 2) / 2) * T_) / (sigma * (T_ ** 0.5))
+  d2 <-  d1 - sigma * (T_ ** 0.5)
+  C <- S * pnorm(d1) - X * exp(-r * T_) * pnorm(d2)
+  C
+}
+```
+
+# Call Options
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+options_call$black_scholes_pred <- apply(options_call, MARGIN = 1, black_scholes)
+
+mse <- function(df){
+  temp <- as.matrix(rowMeans(df[, c("best_bid", "best_offer")])) - as.matrix(df[, c("black_scholes_pred")])
+  squared <- temp ** 2
+  sum <- sum(squared)
+  mse <- sum / nrow(df)
+  mse
+}
+
+call_mse <- mse(options_call)
+
+med_abs_err <- function(df){
+  temp <- as.matrix(rowMeans(df[, c("best_bid", "best_offer")])) - as.matrix(df[, c("black_scholes_pred")])
+  abs_val <- abs(temp)
+  index1 <- nrow(df) %/% 2
+  return_val <- abs_val[index1]
+  return_val
+}
+
+call_med_abs_err <- med_abs_err(options_call)
+```
+
+# Put Options
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+options_put$black_scholes_pred <- apply(options_put, MARGIN = 1, black_scholes_put)
+```

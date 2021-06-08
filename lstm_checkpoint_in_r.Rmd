@@ -1,0 +1,56 @@
+---
+title: "lstm_checkpoint_in_r"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Replicating Code
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+layers <- 4
+n_timestamps <- 20
+features <- 4
+n_batch <- 4096
+n_epochs <- 100
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+close_history <- layer_input(shape=c(n_timestamps, 1))
+input2 <- layer_input(shape=c(features))
+
+lstm <- keras_model_sequential()
+lstm %>% layer_lstm(units = 4, input_shape = c(n_timestamps, 1), return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = FALSE)
+input1 <- lstm(close_history)
+
+connect <- layer_concatenate(inputs = c(input1, input2))
+
+for (i in 1:(layers-1)){
+  connect <- layer_dense(object = connect, units = 100)
+  connect <- layer_batch_normalization(object = connect)
+  connect <- layer_activation_leaky_relu(object = connect)
+}
+
+predict <- layer_dense(object = connect, units = 1, activation = 'relu')
+
+model <- keras_model(inputs = c(close_history, input2), outputs = predict)
+
+summary(model)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+compile(object = model, optimizer = optimizer_adam(), loss = 'mse')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+```
