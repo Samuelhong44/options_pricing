@@ -25,15 +25,33 @@ n_epochs <- 200
 ```
 
 ```{r, echo=FALSE, message=FALSE, warning=FALS}
+options_both <- read.csv("msft_final_df.csv")
+options_both$treasury_rate <- as.numeric(options_both$treasury_rate)
+options_both <- na.omit(options_both)
+options_both$strike_price <- options_both$strike_price / 1000
+options_both <- options_both[, c("date", "exdate", "cp_flag", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "impl_volatility", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+
+options_both <- options_both[, c("cp_flag", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+
+call_op <- options_both %>% filter(cp_flag == "C")
+put_op <- options_both %>% filter(cp_flag == "P")
+
+call_op[, 1] <- NULL
+put_op[, 1] <- NULL
+
+call_op_ver1 <- select(call_op, -c("best_bid", "best_offer"))
+call_op_ver2 <- as.numeric((call_op$best_bid + call_op$best_offer) / 2)
+
 set.seed(42) # equivalent to python's random_state parameter
-train_index <- createDataPartition(y=undef, p = 0.99, list = FALSE)
-train_index2 <- createDataPartition(y=undef2, p = 0.99, list = FALSE)
+train_index <- createDataPartition(y=1:length(call_op_ver2), p = 0.99, list = FALSE)
 
-call_x_train <- undef[train_index, ]
-call_x_test <- undef[-train_index, ]
+call_x_train <- call_op_ver1[train_index, ]
+call_x_test <- call_op_ver1[-train_index, ]
+call_x_train <- as.matrix(call_x_train)
+call_x_test <- as.matrix(call_x_test)
 
-call_y_train <- undef2[train_index2, ]
-call_y_test <- undef2[-train_index2, ]
+call_y_train <- call_op_ver2[train_index]
+call_y_test <- call_op_ver2[-train_index]
 ```
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
@@ -50,4 +68,9 @@ model1 %>% layer_dense(units = 1, activation = 'relu')
 compile(object = model1, optimizer = optimizer_adam(lr = 0.0001), loss = 'mse')
 
 summary(model1)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+history <- fit(object=model1, call_x_train, call_y_train, batch_size=n_batch, epochs=n_epochs, callbacks = c(callback_tensorboard()), validation_split = 0.01, verbose = 1)
+
 ```
