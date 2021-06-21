@@ -9,7 +9,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Black Scholes
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
 library(PerformanceAnalytics)
 library(dplyr)
 library(tidyverse)
@@ -17,34 +17,36 @@ library(tidyverse)
 
 # Separating Call Options and Put Options
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-options_bs <- read.csv("msft_final_df.csv")
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+options_bs <- read.csv("msft_final_df2.csv")
 head(options_bs)
 options_both <- options_bs[, c("date", "exdate", "cp_flag", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "impl_volatility", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
 
+# dropping columns impl_volatility and exdate
 options_both[, 9] <- NULL
 options_both[, 2] <- NULL
 
+# dropping NA values from treasury_rate column
+options_both$treasury_rate <- as.numeric(options_both$treasury_rate)
+summary(options_both$treasury_rate)
+nrow(options_both)
+options_both <- na.omit(options_both)
 nrow(options_both)
 
 options_put <- options_both %>% filter(cp_flag == "P")
+options_put[, 2] <- NULL
 nrow(options_put)
-which(is.na(options_put))
-options_put <- na.omit(options_put)
-nrow(options_put)
+head(options_put)
 
 options_call <- options_both %>% filter(cp_flag == "C")
+options_call[, 2] <- NULL
 nrow(options_call)
-which(is.na(options_call))
-options_call <- na.omit(options_call)
-nrow(options_call)
-options_call$treasury_rate <- ifelse(options_call$treasury_rate == "N/A", NA, options_call$treasury_rate)
-options_call <- na.omit(options_call)
+head(options_call)
 ```
 
-# Black Scholes Model
+# Black Scholes Model: Call and Put Functions
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
 black_scholes_put <- function(row){
   S <- as.numeric(row["closing_price"])
   X <- as.numeric(row["strike_price"]) / 1000
@@ -72,9 +74,8 @@ black_scholes <- function(row){
 
 # Call Options
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-options_call$black_scholes_pred <- apply(options_call, MARGIN = 1, black_scholes)
-
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# mean squared error function
 mse <- function(df){
   temp <- as.matrix(rowMeans(df[, c("best_bid", "best_offer")])) - as.matrix(df[, c("black_scholes_pred")])
   squared <- temp ** 2
@@ -83,8 +84,7 @@ mse <- function(df){
   mse
 }
 
-call_mse <- mse(options_call)
-
+# median absolute error function
 med_abs_err <- function(df){
   temp <- as.matrix(rowMeans(df[, c("best_bid", "best_offer")])) - as.matrix(df[, c("black_scholes_pred")])
   abs_val <- abs(temp)
@@ -93,11 +93,40 @@ med_abs_err <- function(df){
   return_val
 }
 
+# getting BS prediction values for call options
+options_call$black_scholes_pred <- apply(options_call, MARGIN = 1, black_scholes)
+head(options_call)
+
+call_mse <- mse(options_call)
+call_mse
+
 call_med_abs_err <- med_abs_err(options_call)
+call_med_abs_err
 ```
 
 # Put Options
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# getting BS prediction values for put options
 options_put$black_scholes_pred <- apply(options_put, MARGIN = 1, black_scholes_put)
+head(options_put)
+
+put_mse <- mse(options_put)
+put_mse
+
+put_med_abs_err <- med_abs_err(options_put)
+put_med_abs_err
+
+# other metrics tested on put options
+bid_ask_avg <- as.matrix(rowMeans(options_put[, c("best_bid", "best_offer")]))
+bid_ask_avg_minus_pred <- bid_ask_avg - as.matrix(options_put$black_scholes_pred)
+
+rmse <- sqrt(mean(bid_ask_avg_minus_pred ** 2))
+rmse
+med_err <- median(bid_ask_avg_minus_pred)
+med_err
+avg_abs_err <- mean(abs(bid_ask_avg_minus_pred))
+avg_abs_err
+med_abs_dev <- median(abs(bid_ask_avg_minus_pred))
+med_abs_dev
 ```
