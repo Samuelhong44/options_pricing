@@ -1,0 +1,117 @@
+---
+title: "mlp2_put"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## MLP2 Put Options
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+```
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+n_units <- 400
+layers <- 4
+n_batch <- 4096
+n_epochs <- 10
+```
+
+## Data Preparation
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# preliminary data cleaning
+options_both <- read.csv("msft_final_df2.csv")
+options_both$treasury_rate <- as.numeric(options_both$treasury_rate)
+options_both <- na.omit(options_both)
+options_both$strike_price <- options_both$strike_price / 1000
+options_both <- options_both[, c("date", "exdate", "cp_flag", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "impl_volatility", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+
+options_both <- options_both[, c("cp_flag", "strike_price", "best_bid", "best_offer", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+
+put_op2 <- options_both %>% filter(cp_flag == "P")
+put_op2[, 1] <- NULL
+
+# separating input and output dataframes
+# input matrix includes all columns except best_bid and best_offer
+put_op2_ver1 <- select(put_op2, -c("best_bid", "best_offer"))
+
+# output matrix includes best_bid and best_offer columns since these are the values we are trying to predict
+put_op2_ver2 <- select(put_op2, c("best_bid", "best_offer"))
+
+# Use test_inds_put from MLP1_call
+set.seed(42) # equivalent to python's random_state parameter
+test_inds_put <- sample(1:nrow(put_op2_ver2), ceiling(nrow(put_op2_ver2) * 0.99))
+
+put_x_train2 <- put_op2_ver1[test_inds_put, ]
+put_x_test2 <- put_op2_ver1[-test_inds_put, ]
+put_x_train2 <- as.matrix(put_x_train2)
+put_x_test2 <- as.matrix(put_x_test2)
+
+put_y_train2 <- put_op2_ver2[test_inds_put, ]
+put_y_test2 <- put_op2_ver2[-test_inds_put, ]
+put_y_train2 <- as.matrix(put_y_train2)
+put_y_test2 <- as.matrix(put_y_test2)
+```
+
+## Creating Keras Model
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+model2_put <- keras_model_sequential()
+model2_put %>% layer_dense(units = n_units, input_shape = c(dim(put_x_train2)[2])) %>% layer_activation_leaky_relu()
+
+for (i in 1:(layers-1)){
+  model2_put <- model2_put %>% layer_dense(units = n_units)
+  model2_put <- model2_put %>% layer_batch_normalization()
+  model2_put <- model2_put %>% layer_activation_leaky_relu()
+}
+
+model2_put %>% layer_dense(units = 2, activation = 'relu')
+
+compile(object = model2_put, optimizer = optimizer_adam(lr = 0.001), loss = 'mse')
+
+summary(model2_put)
+```
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# learning rate: 0.001
+#history <- fit(object=model2_put, put_x_train2, put_y_train2, batch_size = n_batch, epochs=30, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.0001
+#compile(object=model2_put, optimizer = optimizer_adam(lr=0.0001), loss='mse')
+
+#history <- fit(object=model2_put, put_x_train2, put_y_train2, batch_size = n_batch, epochs=n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.00001
+#compile(object=model2_put, optimizer = optimizer_adam(lr=0.00001), loss='mse')
+
+#history <- fit(object=model2_put, put_x_train2, put_y_train2, batch_size = n_batch, epochs=n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.000001
+#compile(object=model2_put, optimizer = optimizer_adam(lr=0.000001), loss='mse')
+
+#history <- fit(object=model2_put, put_x_train2, put_y_train2, batch_size = n_batch, epochs=n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+#save_model_hdf5(object = model2_put, "C:/Users/robin/Desktop/RStudio/mlp2-put60.h5")
+
+model2_put <- load_model_hdf5("mlp2-put60.h5")
+
+put_y2_predpred <- predict(object=model2_put, put_x_test2)
+
+put_y2_predpred2 <- as.data.frame(put_y2_predpred)
+
+mean_put_y2_predpred <- rowMeans(put_y2_predpred2)
+
+put_y2_test2 <- as.data.frame(put_y_test2)
+
+mean_put_y2_test <- rowMeans(put_y2_test2)
+
+eq_mse_put <- mean((mean_put_y2_test - mean_put_y2_predpred) ** 2)
+eq_mse_put
+```
