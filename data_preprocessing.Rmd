@@ -1,0 +1,147 @@
+---
+title: "data_preprocessing"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Preprocessing
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(knitr)
+library(tidyverse)
+library(RSQLite)
+library(jsonlite)
+library(quantmod)
+library(PerformanceAnalytics)
+```
+
+## Reading In All Relevant Datasets
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# reading in treasury rates from 2010-2020
+treasury <- read.csv("treasury_rate_2010-2020.csv")
+head(treasury)
+
+# using RSQLite to read in Microsoft option prices data from a db browser
+dcon <- dbConnect(SQLite(), dbname = "msft_option.db")
+query1 <- paste0("
+SELECT *
+FROM option_prices;
+")
+
+res <- dbSendQuery(conn = dcon, query1)
+df2 <- dbFetch(res, -1)
+dbClearResult(res)
+head(df2)
+
+# using quantmod to get closing prices for Microsoft
+getSymbols(Symbols = "MSFT", from = "2010-01-01", to = "2020-01-01")
+daily_closing_prices <- Cl(MSFT)
+daily_closing_prices <- as.data.frame(daily_closing_prices)
+head(daily_closing_prices)
+
+#write.csv(daily_closing_prices, "C:/Users/robin/Desktop/RStudio/daily_closing_prices.csv")
+```
+## Daily Closing Prices: Estimating Sigma
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# reading in closing prices .csv file
+df <- read.csv("daily_closing_prices.csv")
+
+#df$date <- as.character(df$date)
+#df$date <- sub("(.{4})(.{2})(.{2})", "\\1-\\2-\\3", df$date)
+
+colnames(df) <- c("date", "closing_price")
+df$date <- as.Date(df$date)
+str(df$date)
+
+# assuming that historical volatility from the previous 20 trading days (approximately one trading month) is representative of the volatility over the life of the option
+estimate_sigma <- function (x){
+  diff1 <- diff(x)
+  denominator <- x[1:nrow(as.data.frame(x))-1]
+  sd(diff1 / denominator)
+}
+
+rownames(df) <- df[,1]
+df[,1] <- NULL
+
+df$sigma_20 <- apply.rolling(df, width=20, FUN="estimate_sigma")
+to_cbind <- df$sigma_20
+rownames(to_cbind) <- NULL
+df <- cbind(df, to_cbind)
+colnames(df) <- c("closing_price", "sigma_20_to_erase", "sigma_20")
+df[,2] <- NULL
+
+df$date <- rownames(df)
+
+# reordering columns
+date_sigma <- df[, c("date", "closing_price", "sigma_20")]
+date_sigma$date <- as.Date(date_sigma$date)
+tail(date_sigma)
+```
+
+## Options Data: Getting Time Differences
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# changing dates into a date class
+df2$date <- as.character(df2$date)
+df2$date <- sub("(.{4})(.{2})(.{2})", "\\1-\\2-\\3", df2$date)
+df2$date <- as.Date(df2$date)
+
+df2$exdate <- as.character(df2$exdate)
+df2$exdate <- sub("(.{4})(.{2})(.{2})", "\\1-\\2-\\3", df2$exdate)
+df2$exdate <- as.Date(df2$exdate)
+
+# creating a new column that shows the number of days between the date the option was purchased and the expiration date  
+df2$date_ndiff <- df2$exdate - df2$date
+head(df2$date_ndiff)
+```
+
+## Options Data/Treasury: Matching Treasury Yield
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# process of matching the yield on the US Treasury instrument having maturity closest to the time until expiration of each option, a widely accepted options trading practice
+options_df <- df2
+options_df$date_ndiff <- as.numeric(options_df$date_ndiff)
+
+# deleting column for 2 months because all its values are NA
+treasury[,3] <- NULL
+treasury$Date <- as.Date(treasury$Date, format="%m/%d/%Y")
+colnames(treasury) <- c("date", "X1mo", 
+                        "X3mo", "X6mo", 
+                        "X1yr", "X2yr", 
+                        "X3yr", "X5yr", 
+                        "X7yr", "X10yr", 
+                        "X20yr", "X30yr")
+
+option_df_with_all_tr <- merge(x=options_df, y=treasury, by="date", all.x=TRUE)
+head(option_df_with_all_tr)
+
+option_df_with_all_tr$treasury_rate <- ifelse(option_df_with_all_tr$date_ndiff <= 45, option_df_with_all_tr$X1mo, ifelse(option_df_with_all_tr$date_ndiff <= 135, option_df_with_all_tr$X3mo, ifelse(option_df_with_all_tr$date_ndiff <= 270, option_df_with_all_tr$X6mo, ifelse(option_df_with_all_tr$date_ndiff <= 547, option_df_with_all_tr$X1yr, ifelse(option_df_with_all_tr$date_ndiff <= 912, option_df_with_all_tr$X2yr, ifelse(option_df_with_all_tr$date_ndiff <= 1460, option_df_with_all_tr$X3yr, ifelse(option_df_with_all_tr$date_ndiff <= 2190, option_df_with_all_tr$X5yr, ifelse(option_df_with_all_tr$date_ndiff <= 3102, option_df_with_all_tr$X7yr, ifelse(option_df_with_all_tr$date_ndiff <= 3975, option_df_with_all_tr$X10yr, ifelse(option_df_with_all_tr$date_ndiff <= 6625, option_df_with_all_tr$X20yr, ifelse(option_df_with_all_tr$date_ndiff > 6625, option_df_with_all_tr$X30yr, NA)))))))))))
+
+# selecting the columns of interest
+options_df_pre_final <- option_df_with_all_tr[, c("date", "exdate", "cp_flag", 
+                                                  "strike_price", "best_bid", "best_offer", 
+                                                  "volume", "open_interest", "impl_volatility", 
+                                                  "date_ndiff", "treasury_rate")]
+head(options_df_pre_final)
+
+# merging closing prices and sigma_20 on date
+options_df_final <- merge(x=options_df_pre_final, y=date_sigma, by="date", all.x = TRUE)
+head(options_df_final)
+
+nrow(options_df_final)
+
+# deleting all rows with incomplete data
+options_df_final <- na.omit(options_df_final)
+
+nrow(options_df_final)
+
+#write.csv(options_df_final, "C:/Users/robin/Desktop/RStudio/msft_final_df2.csv")
+```
