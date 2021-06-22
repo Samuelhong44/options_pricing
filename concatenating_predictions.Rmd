@@ -1,0 +1,122 @@
+---
+title: "concatenating_predictions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Concatenating Predictions
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+```
+
+## Loading options_call and options_put from black_scholes_final
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+options_call <- read.csv("calls_w_bs.csv")
+options_call[,1] <- NULL
+options_put <- read.csv("puts_w_bs.csv")
+options_put[,1] <- NULL
+```
+
+## MLP1
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# call options
+model_call_saved <- load_model_hdf5("mlp1-call30.h5")
+
+all_calls <- options_call[, c("strike_price", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+all_calls$strike_price <- all_calls$strike_price / 1000
+head(all_calls)
+all_calls_mat <- as.matrix(all_calls)
+
+mcs_pred <- predict(object=model_call_saved, all_calls_mat)
+mcs_pred <- as.data.frame(mcs_pred)
+
+# put options
+model_put_saved <- load_model_hdf5("mlp1-put30.h5")
+
+all_puts <- options_put[, c("strike_price", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+all_puts$strike_price <- all_puts$strike_price / 1000
+all_puts_mat <- as.matrix(all_puts)
+
+mps_pred <- predict(object=model_put_saved, all_puts_mat)
+mps_pred <- as.data.frame(mps_pred)
+```
+
+## MLP2
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# call options
+model2_call_saved <- load_model_hdf5("mlp2-call60.h5")
+
+m2cs_pred <- predict(object=model2_call_saved, all_calls_mat)
+m2cs_pred <- as.data.frame(m2cs_pred)
+m2cs_pred <- rowMeans(m2cs_pred)
+m2cs_pred <- as.data.frame(m2cs_pred)
+
+# put options
+model2_put_saved <- load_model_hdf5("mlp2-put60.h5")
+
+m2ps_pred <- predict(object=model2_put_saved, all_puts_mat)
+m2ps_pred <- as.data.frame(m2ps_pred)
+m2ps_pred <- rowMeans(m2ps_pred)
+m2ps_pred <- as.data.frame(m2ps_pred)
+```
+
+## Concatenating
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+final_options_call <- cbind(options_call, mcs_pred, m2cs_pred)
+final_options_put <- cbind(options_put, mps_pred, m2ps_pred)
+
+sam1 <- read.csv("data_to_sam.csv")
+sam1_call <- sam1 %>% filter(cp_flag == "C")
+sam1_lstm_pred <- sam1_call$LSTM_pred
+sam1_lstm_pred <- as.data.frame(sam1_lstm_pred)
+
+sam1_put <- sam1 %>% filter(cp_flag == "P")
+sam1_lstm_pred_put <- sam1_put$LSTM_pred
+sam1_lstm_pred_put <- as.data.frame(sam1_lstm_pred_put)
+
+real_final_call <- cbind(final_options_call, sam1_lstm_pred)
+real_final_put <- cbind(final_options_put, sam1_lstm_pred_put)
+
+colnames(real_final_call) <- c("date", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "date_ndiff", "treasury_rate", "closing_price", "sigma_20", "black_scholes_pred", "mlp1_pred", "mlp2_pred", "lstm_pred")
+
+colnames(real_final_put) <- c("date", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "date_ndiff", "treasury_rate", "closing_price", "sigma_20", "black_scholes_pred", "mlp1_pred", "mlp2_pred", "lstm_pred")
+
+tail(real_final_call)
+tail(real_final_put)
+
+#write.csv(real_final_call, "C:/Users/robin/Desktop/RStudio/calls_all_predictions.csv")
+
+#write.csv(real_final_put, "C:/Users/robin/Desktop/RStudio/puts_all_predictions.csv")
+```
+
+## Reporting MSE
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# the following includes the MSE values obtained from the test data for MLP1, MLP2, and LSTM call and put options 
+models <- c("Black Scholes", "MLP1", "MLP2", "LSTM")
+mse_vals_call <- c(3.336878, 0.2456122, 0.08773857, 0.1348956)
+mse_vals_put <- c(5.619199, 0.08994421, 0.07796273, 0.08686366)
+
+call_mse_vals <- data.frame(models, mse_vals_call)
+colnames(call_mse_vals) <- c("Model", "MSE")
+
+put_mse_vals <- data.frame(models, mse_vals_put)
+colnames(put_mse_vals) <- c("Model", "MSE")
+
+# Call options
+call_mse_vals
+
+# Put options
+put_mse_vals
+```
