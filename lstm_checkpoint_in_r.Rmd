@@ -33,7 +33,6 @@ library(creditmodel)
 
 ```{r, echo=FALSE, message=FALSE, warning=FALSE}
 #HYPER-PARAMETER
-set.seed(42)
 layers <- 4
 n_timestamps <- 20
 features <- 4
@@ -62,11 +61,12 @@ predict <- layer_dense(object = connect, units = 1, activation = 'relu')
 
 model_call <- keras_model(inputs = c(close_history, input2), outputs = predict)
 
-###summary of the LSTM model
+###Summary of the call LSTM model
 summary(model_call)
 
 ###LSTM model for put
 model_put <- keras_model(inputs = c(close_history, input2), outputs = predict)
+###Summary of the put LSTM model
 summary(model_put)
 ```
 
@@ -78,17 +78,22 @@ df <- read.csv("msft_final_df.csv", header = TRUE)
 
 ###convert treasury rate column from character type to numeric type
 df$treasury_rate <- as.numeric(df$treasury_rate)
+
 ###delete all rows that treasury rate is NA
 df <- na.omit(df)
+
 ###delete the wrong index column
 df <- df[,-1]
+
 ###delete some unnecessary column
 drop <- c('exdate', 'impl_volatility', 'volume', 'open_interest', 'sigma_20')
 df <- df[,!names(df) %in% drop]
+
 ###divide the strike price by 1000
 df$strike_price <- df$strike_price/1000
-
 df$X <- row.names(df)
+
+###Split the data into call data and put data
 call_df <- df[df$cp_flag == "C",]
 put_df <- df[df$cp_flag == "P",]
 
@@ -97,22 +102,23 @@ put_df <- df[df$cp_flag == "P",]
 ```{r, echo = TRUE}
 ###data cleaning of closing price data
 underlying <- read.csv("daily_closing_prices.csv", header = TRUE)
+ 
 ###change the column names of data frame
 colnames(underlying) <- c("date", "close")
 
 ###adding 20 NAs before all the data 
-padded <- array(c(rep(NA, 20), underlying$close))
+padded <- array(c(rep(NA, n_timestamps), underlying$close))
 
+###shift the data to get the 20-day historical data
 rolled <- list()
 for (i in 1:length(padded)){
   shifted <- shift(padded, places = -i)
-  rolled[[i]] <- rev(shifted)[1:20]
+  rolled[[i]] <- rev(shifted)[1:n_timestamps]
 }
-
 rolled.new <- list()
-length_rolled.new <- length(rolled)-40
+length_rolled.new <- length(rolled)-n_timestamps*2
 for (i in 1:(length_rolled.new)){
-  a = 40 + i -1
+  a = n_timestamps*2 + i -1
   data <- rolled[[a]]
   rolled.new[[i]] <- as.array(data)
 }
@@ -126,16 +132,10 @@ joined_call <- left_join(call_df, price_history)
 call_df <- na.omit(joined_call)
 joined_put <- left_join(put_df, price_history)
 put_df <- na.omit(joined_put)
-
-# call_df <- joined[joined$cp_flag == "C",]
-# put_df <- joined[joined$cp_flag == "P",]
-
 call_df <- call_df[,!names(call_df) %in% "cp_flag"]
 put_df <- put_df[,!names(put_df) %in% "cp_flag"]
 call_df <- call_df[,!names(call_df) %in% "date"]
 put_df <- put_df[,!names(put_df) %in% "date"]
-# call_df <- na.omit(call_df)
-# callput_df <- na.omit(put_df)
 ```
 
 ```{r, echo = TRUE}
@@ -315,7 +315,6 @@ model.put <- load_model_hdf5('D:/desktop/option_price_new/options_pricing/put-ls
 
 ```
 
-
 ```{r, echo = TRUE}
 ###Make prediction of put
 test.data <- list(data.matrix(put_df_changed[,6:25]), data.matrix(put_df_changed[,1:4]))
@@ -345,7 +344,6 @@ diff <- gg1$test.put - (gg1$best_bid+gg1$best_offer)/2
 put_mse_final <- mean(diff**2)
 
 ```
-
 
 ```{r, echo = TRUE}
 ###Combine the prediction result to the black scholes data
