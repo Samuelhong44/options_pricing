@@ -1,0 +1,364 @@
+---
+title: "lstm_checkpoint_in_r"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Replicating Code
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#LIBRARIES
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+library(reticulate)
+library(binhf)
+library(caret)
+library(creditmodel)
+```
+
+```{r, echo = TRUE}
+#INSTALLMENT
+# install_github('rstudio/reticulate',force=T)
+# install_tensorflow(version= "1.1.0")
+# install_github("rstudio/keras",force=T)
+# keras::install_keras()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#HYPER-PARAMETER
+set.seed(42)
+layers <- 4
+n_timestamps <- 20
+features <- 4
+n_batch <- 4096
+n_epochs <- 100
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+###LSTM model for call
+close_history <- layer_input(shape=c(n_timestamps, 1))
+input2 <- layer_input(shape=c(features))
+
+lstm <- keras_model_sequential()
+lstm %>% layer_lstm(units = 4, input_shape = c(n_timestamps, 1), return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = FALSE)
+input1 <- lstm(close_history)
+
+connect <- layer_concatenate(inputs = c(input1, input2))
+
+for (i in 1:(layers-1)){
+  connect <- layer_dense(object = connect, units = 100)
+  connect <- layer_batch_normalization(object = connect)
+  connect <- layer_activation_leaky_relu(object = connect)
+}
+
+predict <- layer_dense(object = connect, units = 1, activation = 'relu')
+
+model_call <- keras_model(inputs = c(close_history, input2), outputs = predict)
+
+###summary of the LSTM model
+summary(model_call)
+
+###LSTM model for put
+model_put <- keras_model(inputs = c(close_history, input2), outputs = predict)
+summary(model_put)
+```
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+###data cleaning of the msft_final version data
+df <- read.csv("msft_final_df.csv", header = TRUE)
+
+###convert treasury rate column from character type to numeric type
+df$treasury_rate <- as.numeric(df$treasury_rate)
+###delete all rows that treasury rate is NA
+df <- na.omit(df)
+###delete the wrong index column
+df <- df[,-1]
+###delete some unnecessary column
+drop <- c('exdate', 'impl_volatility', 'volume', 'open_interest', 'sigma_20')
+df <- df[,!names(df) %in% drop]
+###divide the strike price by 1000
+df$strike_price <- df$strike_price/1000
+
+df$X <- row.names(df)
+call_df <- df[df$cp_flag == "C",]
+put_df <- df[df$cp_flag == "P",]
+
+```
+
+```{r, echo = TRUE}
+###data cleaning of closing price data
+underlying <- read.csv("daily_closing_prices.csv", header = TRUE)
+###change the column names of data frame
+colnames(underlying) <- c("date", "close")
+
+###adding 20 NAs before all the data 
+padded <- array(c(rep(NA, 20), underlying$close))
+
+rolled <- list()
+for (i in 1:length(padded)){
+  shifted <- shift(padded, places = -i)
+  rolled[[i]] <- rev(shifted)[1:20]
+}
+
+rolled.new <- list()
+length_rolled.new <- length(rolled)-40
+for (i in 1:(length_rolled.new)){
+  a = 40 + i -1
+  data <- rolled[[a]]
+  rolled.new[[i]] <- as.array(data)
+}
+
+###format the data to data.frame type
+rolled.new <- as.data.frame(matrix(unlist(rolled.new), nrow = length(rolled.new), byrow = T))
+rolled.new$date <- underlying$date[21:nrow(underlying)]
+
+price_history <- rolled.new
+joined_call <- left_join(call_df, price_history)
+call_df <- na.omit(joined_call)
+joined_put <- left_join(put_df, price_history)
+put_df <- na.omit(joined_put)
+
+# call_df <- joined[joined$cp_flag == "C",]
+# put_df <- joined[joined$cp_flag == "P",]
+
+call_df <- call_df[,!names(call_df) %in% "cp_flag"]
+put_df <- put_df[,!names(put_df) %in% "cp_flag"]
+call_df <- call_df[,!names(call_df) %in% "date"]
+put_df <- put_df[,!names(put_df) %in% "date"]
+# call_df <- na.omit(call_df)
+# callput_df <- na.omit(put_df)
+```
+
+```{r, echo = TRUE}
+set.seed(42)
+#call
+group <- c("best_bid", "best_offer")
+call_df_changed <- call_df[,!names(call_df) %in% group]
+call_train_indx <- sample(1:nrow(call_df_changed), ceiling(nrow(call_df_changed)*0.99))
+call_X_train <- call_df_changed[call_train_indx,]
+call_X_test <- call_df_changed[-call_train_indx,]
+
+###alternative method for assigning training set and test set
+# call_X <- train_test_split(call_df[,!names(call_df) %in% group],split_type = "byRow", prop = 0.01, seed = 42)
+# call_X_test <- call_X$train
+# call_X_train <- call_X$test
+
+
+
+call_y <- matrix((call_df$best_bid + call_df$best_offer)/2, nrow = length((call_df$best_bid+call_df$best_offer)/2))
+call_y_train <- call_y[call_train_indx,]
+call_y_test <- call_y[-call_train_indx,]
+
+###alternative method for assigning training set and test set
+# call_y <- train_test_split(matrix((call_df$best_bid + call_df$best_offer)/2, nrow = length((call_df$best_bid + call_df$best_offer)/2)),split_type = "OOT", prop = 0.01, seed = 42)
+# call_y_train <- call_y$test
+# call_y_test <- call_y$train
+```
+
+```{r, echo = TRUE}
+###put 
+set.seed(42)
+group <- c("best_bid", "best_offer")
+put_df_changed <- put_df[,!names(put_df) %in% group]
+put_train_indx <- sample(1:nrow(put_df_changed),
+                         ceiling(nrow(put_df_changed)*0.99))
+put_X_train <- put_df_changed[put_train_indx,]
+put_X_test <- put_df_changed[-put_train_indx,]
+
+###alternative method for assigning training set and test set
+# put_X <- train_test_split(put_df[,!names(put_df) %in% group],split_type = "OOT", prop = 0.01, seed = 42)
+# put_X_test <- put_X$train
+# put_X_train <- put_X$test
+
+put_y <- matrix((put_df$best_bid + put_df$best_offer)/2, nrow = length((put_df$best_bid+put_df$best_offer)/2))
+put_y_train <- put_y[put_train_indx,]
+put_y_test <- put_y[-put_train_indx,]
+
+###alternative method for assigning training set and test set
+# put_y <- train_test_split(matrix((put_df$best_bid + put_df$best_offer)/2, nrow = length((put_df$best_bid + put_df$best_offer)/2)),split_type = "OOT", prop = 0.01, seed = 42)
+# put_y_train <- put_y$test
+# put_y_test <- put_y$train
+```
+
+```{r, echo = TRUE}
+###reshape the training set for call data
+a.1 <-data.matrix(call_X_train[,6:25])
+b.1 <- data.matrix(call_X_train[,1:4])
+c.1 <- list(a.1,b.1)
+d.1 <- as.vector(call_y_train)
+
+```
+
+```{r, echo = TRUE}
+###call model training
+###quicker version model
+# compile(object = model_call, optimizer = optimizer_adam(lr = 0.01), loss = 'mse')
+# history_call <- fit(object = model_call, c.1, d.1, 
+#                     batch_size = n_batch, epochs = 10, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# 
+# compile(object = model_call, optimizer = optimizer_adam(lr = 0.001), loss = 'mse')
+# history_call <- fit(object = model_call, c.1, d.1, 
+#                     batch_size = n_batch, epochs = 5, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# 
+# compile(object = model_call, optimizer = optimizer_adam(lr = 0.0001), loss = 'mse')
+# history_call <- fit(object = model_call, c.1, d.1, 
+#                     batch_size = n_batch, epochs = 5, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# save_model_hdf5(object = model_call, 'D:/desktop/option_price_new/options_pricing/call-lstm.h5')
+
+model.call <- load_model_hdf5('D:/desktop/option_price_new/options_pricing/call-lstm.h5')
+
+```
+
+```{r, echo = TRUE}
+###slow version model
+# compile(object = model_call, optimizer = optimizer_adam(lr = 0.01), loss = 'mse')
+# history_call <- fit(object = model_call, c.1, d.1, 
+#                     batch_size = n_batch, epochs = n_epochs, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# save_model_hdf5(object = model_call, 'D:/desktop/option_price_new/options_pricing/call-lstm-slow.h5')
+
+```
+
+
+```{r, echo = TRUE}
+###Make prediction of call
+test.data <- list(data.matrix(call_df_changed[,6:25]), data.matrix(call_df_changed[,1:4]))
+price.predictin.lstm.call <- predict(model.call, test.data)
+price.predictin.lstm.call
+train.or.not <- c()
+for (i in call_train_indx){
+  train.or.not[i] <- TRUE
+}
+for (i in 1:nrow(call_df)){
+  if (is.na(train.or.not[i]) == TRUE){
+    train.or.not[i] = FALSE
+  }
+}
+
+calldata.with.predict <- cbind(call_df[,1:7], price.predictin.lstm.call, train.or.not)
+write.csv(calldata.with.predict, "call_prediction_result.csv")
+```
+
+```{r, echo = TRUE}
+###Calculating the MSE for the test data of call
+test.data.call.test <- list(data.matrix(call_X_test[,6:25]), data.matrix(call_X_test[,1:4]))
+test.call <- predict(model.call, test.data.call.test)
+gg <- cbind(call_df[-call_train_indx,], test.call)
+gg$test.call <- as.numeric(gg$test.call)
+diff <- gg$test.call - (gg$best_bid+gg$best_offer)/2
+call_mse_final <- mean(diff**2)
+```
+
+```{r, echo = TRUE}
+###reshape the training set for put data
+a.2 <-data.matrix(put_X_train[,6:25])
+b.2 <- data.matrix(put_X_train[,1:4])
+c.2 <- list(a.2,b.2)
+d.2 <- as.vector(put_y_train)
+
+```
+
+```{r, echo = TRUE}
+###quicker model
+# compile(object = model_put, optimizer = optimizer_adam(lr = 0.01), loss = 'mse')
+# history_put <- fit(object = model_put, c.2, d.2, 
+#                     batch_size = n_batch, epochs = 10, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# compile(object = model_put, optimizer = optimizer_adam(lr = 0.001), loss = 'mse')
+# history_put <- fit(object = model_put, c.2, d.2, 
+#                     batch_size = n_batch, epochs = 5, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# compile(object = model_put, optimizer = optimizer_adam(lr = 0.0001), loss = 'mse')
+# history_put <- fit(object = model_put, c.2, d.2, 
+#                     batch_size = n_batch, epochs = 5, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# save_model_hdf5(object = model_put, 'D:/desktop/option_price_new/options_pricing/put-lstm.h5')
+
+model.put <- load_model_hdf5('D:/desktop/option_price_new/options_pricing/put-lstm.h5')
+```
+
+```{r, echo = TRUE}
+###slow version model
+# compile(object = model_put, optimizer = optimizer_adam(lr = 0.01), loss = 'mse')
+# history_put <- fit(object = model_put, c.2, d.2, 
+#                     batch_size = n_batch, epochs = n_epochs, 
+#                     validation_split = 0.01,
+#                     callbacks = c(callback_tensorboard()),
+#                     verbose=1)
+# save_model_hdf5(object = model_put, 'D:/desktop/option_price_new/options_pricing/put-lstm-slow.h5')
+
+```
+
+
+```{r, echo = TRUE}
+###Make prediction of put
+test.data <- list(data.matrix(put_df_changed[,6:25]), data.matrix(put_df_changed[,1:4]))
+price.predictin.lstm.put <- predict(model.put, test.data)
+price.predictin.lstm.put
+train.or.not.put <- c()
+for (i in put_train_indx){
+  train.or.not.put[i] <- T
+}
+for (i in 1:nrow(put_df)){
+  if (is.na(train.or.not.put[i]) == TRUE){
+    train.or.not.put[i] = FALSE
+  }
+}
+
+putdata.with.predict <- cbind(put_df[,1:7], price.predictin.lstm.put, train.or.not.put)
+write.csv(putdata.with.predict, "put_prediction_result.csv")
+```
+
+```{r, echo = TRUE}
+###Calculating the MSE for the test data of put
+test.data.put.test <- list(data.matrix(put_X_test[,6:25]), data.matrix(put_X_test[,1:4]))
+test.put <- predict(model.put, test.data.put.test)
+gg1 <- cbind(put_df[-put_train_indx,], test.put)
+gg1$test.put <- as.numeric(gg1$test.put)
+diff <- gg1$test.put - (gg1$best_bid+gg1$best_offer)/2
+put_mse_final <- mean(diff**2)
+
+```
+
+
+```{r, echo = TRUE}
+###Combine the prediction result to the black scholes data
+call_lstm_data <- read.csv("call_prediction_result.csv", header = TRUE)
+call_lstm_data <- call_lstm_data[,c("X", "price.predictin.lstm.call", "train.or.not")]
+colnames(call_lstm_data)[2] <- "LSTM_pred"
+put_lstm_data <- read.csv("put_prediction_result.csv", header = TRUE)
+put_lstm_data <- put_lstm_data[,c("X", "price.predictin.lstm.put", "train.or.not.put")]
+colnames(put_lstm_data) <- colnames(call_lstm_data)
+optionboth <- read.csv("options_both.csv", header = TRUE)
+bothdata <- rbind(call_lstm_data, put_lstm_data)
+bothdata$X <- as.numeric(bothdata$X)
+gg <- left_join(optionboth, bothdata, by= "X")
+write.csv(gg, "data_to_sam.csv")
+
+```
