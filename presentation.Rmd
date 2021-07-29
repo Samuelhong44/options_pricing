@@ -1,0 +1,464 @@
+---
+title: "Option Pricing with Deep Learning"
+output:
+  ioslides_presentation: default
+  slidy_presentation: default
+header-includes:
+- \usepackage{amsmath}
+- \usepackage[osf,sc]{mathpazo}
+- \usepackage{mathtools}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Options: option contracts are a financial derivative that represents the right, but not the obligation, to buy (call) or sell (put) a particular security on (European type) or before (American type) an expiration date. For this research project, we will focus on European type option contracts. 
+
+## Black-Scholes Model
+
+Black-Scholes Model: developed in 1973 by Fischer Black, Robert Merton, and Myron Scholes, the Black-Scholes model is regarded as one of the best ways of determining the fair price of options.
+
+Call Option without dividends:
+
+\[C = S * \Phi(d1) - Xe^{-rT} * \Phi(d2)\]
+
+Put Option without dividends:
+
+\[P = Xe^{-rT} * \Phi(-d_2) - S * \Phi(-d_1)\]
+
+Where,
+
+* $d_1 = \frac{ln(S/X) + (r + \sigma^2/2)T}{\sigma\sqrt T}$
+* $d_2 = d_1 - \sigma\sqrt T$
+* $\Phi(.)$ is the cumulative density function of the standard normal distribution
+
+## Black-Scholes Model - continued
+
+Inputs:
+
+* S: price of the underlying stock
+* X: strike price
+* T: annualized fraction of time until expiration
+* r: risk-free interest rate
+* $\sigma$: standard deviation of stock price returns, which cannot be directly observed
+
+## Data Collection and Processing
+
+Before we derive the option price for calls and puts using the Black-Scholes model and build our deep learning models that take the aforementioned inputs to price option contracts, we need to gather the relevant datasets.
+
+* First dataset: historical options data from the Wharton Research Data Services (we have collected 10 years' worth of data on Microsoft option contracts)
+
+* Second dataset: treasury yields from the US Treasury Resource Center (same timeline as first dataset)
+
+* Third dataset: historical closing prices of the underlying stock (same timeline as first dataset)
+
+## First and Second Dataset: Reading in Data
+
+Due to the immensely large file size of the historical options data, we recommend downloading the dataset as a .db file. Leveraging DB Browser (SQLite), use the following code to read in the data:
+
+```{r, eval=FALSE, echo=TRUE}
+library(RSQLite)
+
+# using RSQLite to read in Microsoft option prices data from a db browser
+dcon <- dbConnect(SQLite(), dbname = "msft_option.db")
+query1 <- paste0("
+SELECT *
+FROM option_prices;
+")
+
+res <- dbSendQuery(conn = dcon, query1)
+df2 <- dbFetch(res, -1)
+dbClearResult(res)
+
+# importing treasury rate data
+treasury <- read.csv("treasury_rate_2010-2020.csv")
+```
+
+## Third Dataset: Reading in Data
+
+Use the "quantmod" package to get historical closing prices on the stock of your choice. In our case, it is Microsoft.
+
+```{r, eval=FALSE, echo=TRUE}
+library(quantmod)
+
+# using quantmod to get closing prices for Microsoft
+getSymbols(Symbols = "MSFT", from = "2010-01-01", to = "2020-01-01")
+daily_closing_prices <- Cl(MSFT)
+daily_closing_prices <- as.data.frame(daily_closing_prices)
+head(daily_closing_prices)
+
+#write.csv(daily_closing_prices, "C:/Users/robin/Desktop/RStudio/daily_closing_prices.csv")
+```
+
+## Data Processing
+
+Once all three datasets have been imported into your R session, please refer to the "data_preprocessing.rmd" file to obtain a final dataset that contains all relevant columns. In it, we go over how to estimate volatility ($\sigma$), which assumes that the historical volatility from the previous 20 trading days (approx. one trading month) is representative of the volatility over the life of the option. We also go over how to match the yield on the US Treasury instrument with each option to find the appropriate risk-free rate (r) for each based on its time until expiration, a widely accepted options trading practice. 
+
+## Black-Scholes Model: Application (1)
+
+In our final dataset, we will have the necessary 5 inputs of the Black-Scholes model (X, T, S, r, $\sigma$), so we can now feed our data into the BS model.
+
+Separating call and put Options:
+
+```{r, eval=FALSE, echo=TRUE}
+options_bs <- read.csv("msft_final_df2.csv")
+head(options_bs)
+options_both <- options_bs[, c("date", "exdate", "cp_flag", "strike_price", "best_bid", "best_offer", "volume", "open_interest", "impl_volatility", "date_ndiff", "treasury_rate", "closing_price", "sigma_20")]
+
+# dropping columns impl_volatility and exdate
+options_both[, 9] <- NULL
+options_both[, 2] <- NULL
+
+# dropping NA values from treasury_rate column
+options_both$treasury_rate <- as.numeric(options_both$treasury_rate)
+summary(options_both$treasury_rate)
+nrow(options_both)
+options_both <- na.omit(options_both)
+nrow(options_both)
+
+# getting put options
+options_put <- options_both %>% filter(cp_flag == "P")
+options_put[, 2] <- NULL
+nrow(options_put)
+head(options_put)
+
+# getting call options
+options_call <- options_both %>% filter(cp_flag == "C")
+options_call[, 2] <- NULL
+nrow(options_call)
+head(options_call)
+```
+
+## Black-Scholes Model: Application (2)
+
+Building BS functions for put and call options:
+
+```{r, eval=FALSE, echo=TRUE}
+black_scholes_put <- function(row){
+  S <- as.numeric(row["closing_price"])
+  X <- as.numeric(row["strike_price"]) / 1000
+  T_ <- as.numeric(row["date_ndiff"]) / 365
+  r <- as.numeric(row["treasury_rate"]) / 100
+  sigma <- as.numeric(row["sigma_20"])
+  d1 <- (log(S / X) + (r  + (sigma ** 2) / 2) * T_) / (sigma * (T_ ** 0.5))
+  d2 <- d1 - sigma * (T_ ** 0.5)
+  P <- pnorm(-d2) * X * exp(-r * T_) - S * pnorm(-d1)
+  P
+}
+
+black_scholes <- function(row){
+  S <- as.numeric(row["closing_price"])
+  X <- as.numeric(row["strike_price"]) / 1000
+  T_ <- as.numeric(row["date_ndiff"]) / 365
+  r <- as.numeric(row["treasury_rate"]) / 100
+  sigma <- as.numeric(row["sigma_20"])
+  d1 <- (log(S / X) + (r + (sigma ** 2) / 2) * T_) / (sigma * (T_ ** 0.5))
+  d2 <-  d1 - sigma * (T_ ** 0.5)
+  C <- S * pnorm(d1) - X * exp(-r * T_) * pnorm(d2)
+  C
+}
+
+# getting BS prediction values for call options
+options_call$black_scholes_pred <- apply(options_call, MARGIN = 1, black_scholes)
+
+# getting BS prediction values for put options
+options_put$black_scholes_pred <- apply(options_put, MARGIN = 1, black_scholes_put)
+```
+
+## Black-Scholes Model: Application (3)
+
+Error metrics:
+
+```{r, eval=FALSE, echo=TRUE}
+# getting error metrics from test observations
+error_metrics <- function(actual, predicted){
+  diff <- actual - predicted
+  mse <- mean(diff ** 2)
+  rel <- diff / actual
+  rel_df <- as.data.frame(rel)
+  bias <- 100 * median(rel)
+  aape <- 100 * mean(abs(rel))
+  mape <- 100 * median(abs(rel))
+  pe5 <- 100 * (sum(abs(rel) < 0.05) / nrow(rel_df))
+  pe10 <- 100 * (sum(abs(rel) < 0.10) / nrow(rel_df))
+  pe20 <- 100 * (sum(abs(rel) < 0.20) / nrow(rel_df))
+  return_vals <- c(mse, bias, aape, mape, pe5, pe10, pe20)
+  return_vals
+}
+
+# for call options
+call_op_ver1 <- select(options_call, -c("best_bid", "best_offer"))
+
+# output vector is the average of bid and ask, which is taken to be the equilibrium price of an option
+call_op_ver2 <- as.numeric((options_call$best_bid + options_call$best_offer) / 2)
+
+# creating data partitions for training and testing (training: 99%, testing: 1%)
+set.seed(42) # equivalent to python's random_state parameter
+test_inds <- sample(1:length(call_op_ver2), ceiling(length(call_op_ver2) * 0.99))
+
+call_x_test <- call_op_ver1[-test_inds, ]
+call_y_test <- call_op_ver2[-test_inds]
+
+call_bs_pred <- apply(call_x_test, MARGIN=1, black_scholes)
+
+bs_call_error_metrics <- error_metrics(call_y_test, call_bs_pred)
+bs_call_error_metrics
+
+# for put options
+put_op_ver1 <- select(options_put, -c("best_bid", "best_offer"))
+
+# output vector is the average of bid and ask, which is taken to be the equilibrium price of an option
+put_op_ver2 <- as.numeric((options_put$best_bid + options_put$best_offer) / 2)
+
+# creating data partitions for training and testing (training: 99%, testing: 1%)
+test_inds_put <- sample(1:length(put_op_ver2), ceiling(length(put_op_ver2) * 0.99))
+
+put_x_test <- put_op_ver1[-test_inds_put, ]
+put_y_test <- put_op_ver2[-test_inds_put]
+
+put_bs_pred <- apply(put_x_test, MARGIN=1, black_scholes_put)
+
+bs_put_error_metrics <- error_metrics(put_y_test, put_bs_pred)
+bs_put_error_metrics
+```
+
+Please refer to the "black_scholes_final.rmd" file for access to the entire code. Note that the training and testing datasets are the same across all the models that we will be examining. Also, note that the average price of the best bid and best offer prices is taken to be the equilibirum price of an option.
+
+## Deep Learning
+
+The purpose of this research project is to determine whether deep learning models can produce better predictions than the Black-Scholes Model based on several error metrics; namely, the mean-squared error (MSE). The following deep learning models are predicated on the idea that we can view an option as a function of the contract terms X and T, as well as information on the prevailing financial state S, r, and $\sigma$. With that said, let us consider the first deep learning model.
+
+## Multi-Layer Perceptron 1 (MLP1)
+
+Multi-layer perceptron: a class of feedforward artificial neural network (ANN). Consists of at least three layers of nodes: an input layer, a hidden layer, and an output layer.
+
+MLP1: purpose is to find the equilibrium price of an option using the 20-day historical volatility as an input, along with the other parameters. Four hidden layers: three at 400 neurons each and output layer with one neuron. 400-neuron layers use Leaky ReLU activation; output node uses a ReLU activation; Glorot initialization; batch normalization to improve training speed and loss at convergence (applied after the 400-neuron layers).
+
+Consult "mlp1_call.rmd" and "mlp1_put.rmd" to find the necessary code to separate data into call options and put options and to partition the data set into a training set and a testing set. Find below the code to create the model using Keras and get error metrics:
+
+```{r, eval=FALSE, echo=TRUE}
+# hyperparameters
+n_units <- 400
+layers <- 4
+n_batch <- 4096
+n_epochs <- 10
+```
+
+```{r, eval=FALSE, echo=TRUE}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+
+model_call <- keras_model_sequential()
+model_call %>% layer_dense(units = n_units, input_shape = c(dim(call_x_train)[2])) %>% layer_activation_leaky_relu()
+
+for (i in 1:(layers-1)){
+  model_call <- model_call %>% layer_dense(units = n_units)
+  model_call <- model_call %>% layer_batch_normalization()
+  model_call <- model_call %>% layer_activation_leaky_relu()
+}
+
+model_call %>% layer_dense(units = 1, activation = 'relu')
+
+compile(object = model_call, optimizer = optimizer_adam(), loss = 'mse')
+
+summary(model_call)
+```
+
+```{r, eval=FALSE, echo=TRUE}
+# uncomment the code below to train the model. Estimated time: 30-45min.
+
+# learning rate: 0.001
+#history <- fit(object=model_call, call_x_train, call_y_train, batch_size = n_batch, epochs = n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.0001
+#compile(object=model_call, optimizer=optimizer_adam(lr=0.0001), loss='mse')
+
+#history <- fit(object=model_call, call_x_train, call_y_train, batch_size = n_batch, epochs = n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.00001
+#compile(object=model_call, optimizer = optimizer_adam(lr=0.00001), loss = 'mse')
+
+#history <- fit(object=model_call, call_x_train, call_y_train, batch_size = n_batch, epochs = n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+#save_model_hdf5(object=model_call, "C:/Users/robin/Desktop/RStudio/mlp1-call30.h5")
+
+model_call <- load_model_hdf5("mlp1-call30.h5")
+
+call_y_predpred <- predict(object=model_call, call_x_test)
+
+call_y_predpredv2 <- as.numeric(call_y_predpred)
+
+diff <- call_y_test - call_y_predpredv2
+
+call_mse_final <- mean(diff ** 2)
+call_mse_final
+
+error_metrics <- function(actual, predicted){
+  diff <- actual - predicted
+  mse <- mean(diff ** 2)
+  rel <- diff / actual
+  rel_df <- as.data.frame(rel)
+  bias <- 100 * median(rel)
+  aape <- 100 * mean(abs(rel))
+  mape <- 100 * median(abs(rel))
+  pe5 <- 100 * (sum(abs(rel) < 0.05) / nrow(rel_df))
+  pe10 <- 100 * (sum(abs(rel) < 0.10) / nrow(rel_df))
+  pe20 <- 100 * (sum(abs(rel) < 0.20) / nrow(rel_df))
+  return_vals <- c(mse, bias, aape, mape, pe5, pe10, pe20)
+  return_vals
+}
+
+call_error_metrics <- error_metrics(call_y_test, call_y_predpredv2)
+call_error_metrics
+```
+
+Note: same model is used for put options.
+
+## Multi-Layer Perceptron 2 (MLP2)
+
+MLP2: purpose is to calculate the bid and ask prices as outputs. Four hidden layers: three layers at 400 neurons each and output layer with two neurons (one neuron to output the bid price and another to output the ask price). 400-neuron layers use Leaky ReLU activation; output node uses a ReLU activation; Glorot initialization; batch normalization to improve training speed and loss at convergence (applied after the 400-neuron layers).
+
+```{r, eval=FALSE, echo=TRUE}
+# hyperparameters
+n_units <- 400
+layers <- 4
+n_batch <- 4096
+n_epochs <- 10
+```
+
+```{r, eval=FALSE, echo=FALSE}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(dplyr)
+
+model2_call <- keras_model_sequential()
+model2_call %>% layer_dense(units = n_units, input_shape = c(dim(call_x_train2)[2])) %>% layer_activation_leaky_relu()
+
+for (i in 1:(layers-1)){
+  model2_call <- model2_call %>% layer_dense(units = n_units)
+  model2_call <- model2_call %>% layer_batch_normalization()
+  model2_call <- model2_call %>% layer_activation_leaky_relu()
+}
+
+model2_call %>% layer_dense(units = 2, activation = 'relu')
+
+compile(object = model2_call, optimizer = optimizer_adam(lr = 0.001), loss = 'mse')
+
+summary(model2_call)
+```
+
+```{r, eval=FALSE, echo=TRUE}
+# uncomment the following code to train the model. Estimated time: 45-60min
+
+# learning rate: 0.001
+#history <- fit(object=model2_call, call_x_train2, call_y_train2, batch_size = n_batch, epochs=30, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.0001
+#compile(object=model2_call, optimizer = optimizer_adam(lr=0.0001), loss='mse')
+
+#history <- fit(object=model2_call, call_x_train2, call_y_train2, batch_size = n_batch, epochs=n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.00001
+#compile(object=model2_call, optimizer = optimizer_adam(lr=0.00001), loss='mse')
+
+#history <- fit(object=model2_call, call_x_train2, call_y_train2, batch_size = n_batch, epochs=n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+# learning rate: 0.000001
+#compile(object=model2_call, optimizer = optimizer_adam(lr=0.000001), loss='mse')
+
+#history <- fit(object=model2_call, call_x_train2, call_y_train2, batch_size = n_batch, epochs=n_epochs, validation_split = 0.01, callbacks = c(callback_tensorboard()), verbose=1)
+
+#save_model_hdf5(object = model2_call, "C:/Users/robin/Desktop/RStudio/mlp2-call60.h5")
+
+model2_call <- load_model_hdf5("mlp2-call60.h5")
+
+call_y2_predpred <- predict(object=model2_call, call_x_test2)
+
+call_y2_predpred2 <- as.data.frame(call_y2_predpred)
+
+mean_call_y2_predpred <- rowMeans(call_y2_predpred2)
+
+call_y2_test2 <- as.data.frame(call_y_test2)
+
+mean_call_y2_test <- rowMeans(call_y2_test2)
+
+eq_mse_call <- mean((mean_call_y2_test - mean_call_y2_predpred) ** 2)
+eq_mse_call
+
+error_metrics <- function(actual, predicted){
+  diff <- actual - predicted
+  mse <- mean(diff ** 2)
+  rel <- diff / actual
+  rel_df <- as.data.frame(rel)
+  bias <- 100 * median(rel)
+  aape <- 100 * mean(abs(rel))
+  mape <- 100 * median(abs(rel))
+  pe5 <- 100 * (sum(abs(rel) < 0.05) / nrow(rel_df))
+  pe10 <- 100 * (sum(abs(rel) < 0.10) / nrow(rel_df))
+  pe20 <- 100 * (sum(abs(rel) < 0.20) / nrow(rel_df))
+  return_vals <- c(mse, bias, aape, mape, pe5, pe10, pe20)
+  return_vals
+}
+
+call2_error_metrics <- error_metrics(mean_call_y2_test, mean_call_y2_predpred)
+call2_error_metrics
+```
+
+## Long Short-Term Memory (LSTM)
+LSTM: The purpose of LSTM model is using RNN architecture to estimate volatility to improve the option pricing performance. In our project, we use an 8-unit LSTM model which takes the recent 20 days' data as the historical data as the input and calculate the volatility of those data. And then using the volatility and S, X, T,r as the input to go through the same MLP1 architecture, it can output the equilibrium price.
+
+## Figure
+![LSTM Architecture](lstm.png)
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#HYPER-PARAMETER
+layers <- 4
+n_timestamps <- 20
+features <- 4
+n_batch <- 4096
+n_epochs <- 100
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+###LSTM model for call
+close_history <- layer_input(shape=c(n_timestamps, 1))
+input2 <- layer_input(shape=c(features))
+
+lstm <- keras_model_sequential()
+lstm %>% layer_lstm(units = 4, input_shape = c(n_timestamps, 1), return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = TRUE) %>% layer_lstm(units = 4, return_sequences = FALSE)
+input1 <- lstm(close_history)
+
+connect <- layer_concatenate(inputs = c(input1, input2))
+
+for (i in 1:(layers-1)){
+  connect <- layer_dense(object = connect, units = 100)
+  connect <- layer_batch_normalization(object = connect)
+  connect <- layer_activation_leaky_relu(object = connect)
+}
+
+predict <- layer_dense(object = connect, units = 1, activation = 'relu')
+
+model_call <- keras_model(inputs = c(close_history, input2), outputs = predict)
+
+###Summary of the call LSTM model
+summary(model_call)
+
+###LSTM model for put
+model_put <- keras_model(inputs = c(close_history, input2), outputs = predict)
+###Summary of the put LSTM model
+summary(model_put)
+```
+
+## Predictions and Error Metrics
+
+Please consult the "concatenating_predictions.rmd" file to find the tables listing the error metrics for each model for call options and put options. Evidently, based on MSE values, the most accurate predictions on the testing set were provided by MLP2, followed by LSTM, MLP1, and Black-Scholes, respectively, for both call and put options.
+
+We also found the option prices for the entire dataset using all four models. Please find the results in the .csv files. 
+
+## Plots and Graphs
